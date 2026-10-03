@@ -179,15 +179,20 @@ def _resolved_origin(target: str) -> str | None:
 
 
 def _disallowed_targets(config: DictConfig) -> list[str]:
-    """Return the ``_target_`` values this loader refuses to instantiate.
+    """Return the ``_target_`` and ``output_fn`` paths this loader refuses to load.
 
     Called by :meth:`InferenceModel.from_packed`. Each target is checked twice:
     once as written, which keeps an untrusted name from being imported at all,
     and once after resolution, because the written path can reach outside its
     own namespace through an attribute of an allowed module.
     """
+    targets = _iter_target_strings(config)
+    output_fn = config.get("output_fn")
+    if isinstance(output_fn, str) and output_fn:
+        targets.append(output_fn)
+
     disallowed = set()
-    for target in _iter_target_strings(config):
+    for target in targets:
         if target in _DENIED_TARGETS or not target.startswith(_ALLOWED_TARGET_PREFIXES):
             disallowed.add(target)
             continue
@@ -294,9 +299,10 @@ class InferenceModel:
         resolves the inference config against the bundle root, and then
         instantiates :class:`InferenceModel`.
 
-        If the config references modules bundled alongside the model, the load
-        is blocked unless ``trust_user_code=True``. In that case the bundle root
-        is inserted into ``sys.path`` and the config is reloaded so import-based
+        If the config references bundled code, or ``_target_`` or ``output_fn``
+        paths outside the allowed namespaces, the load is blocked unless
+        ``trust_user_code=True``. For trusted bundled code, the bundle root is
+        inserted into ``sys.path`` and the config is reloaded so import-based
         objects resolve against the newly trusted code.
 
         Args:
@@ -304,9 +310,9 @@ class InferenceModel:
                 ``espnet3.utils.publication_utils.pack_model()``. This directory must
                 contain ``conf/inference.yaml`` and any files referenced by
                 that config.
-            trust_user_code: Set to ``True`` to allow importing bundled recipe
-                code from the pack directory. Required when the inference
-                config references modules shipped inside the bundle.
+            trust_user_code: Set to ``True`` to allow bundled recipe code and
+                ``_target_`` or ``output_fn`` paths outside the allowed namespaces.
+                Enable this only if you trust the bundle's publisher.
 
         Returns:
             InferenceModel: Inference model loaded from ``pack_model`` output.
@@ -314,8 +320,9 @@ class InferenceModel:
         Raises:
             FileNotFoundError: If the bundle directory, ``meta.yaml``, or the
                 referenced inference config is missing.
-            ValueError: If the config requires bundled user code but
-                ``trust_user_code`` is ``False``.
+            ValueError: If the config requires bundled code or disallowed
+                ``_target_`` or ``output_fn`` paths, but ``trust_user_code`` is
+                ``False``.
 
         Notes:
             ``meta.yaml`` is treated as the source of truth for locating the
@@ -398,17 +405,17 @@ class InferenceModel:
             )
 
         # The bundled-code check above only sees modules shipped in the bundle.
-        # A ``_target_`` naming something already installed in this environment
-        # passes it untouched, so constrain the targets themselves as well.
+        # A ``_target_`` or ``output_fn`` naming something already installed in
+        # this environment passes it untouched, so constrain those paths as well.
         if not trust_user_code:
             disallowed = _disallowed_targets(inference_config)
             if disallowed:
                 raise ValueError(
-                    "This inference config instantiates targets outside the "
+                    "This inference config references targets outside the "
                     "namespaces a published bundle may build from: "
                     + ", ".join(disallowed)
-                    + ". Hydra executes every `_target_`, so loading this "
-                    "bundle would run them. Set trust_user_code=True only if "
+                    + ". Loading `_target_` or `output_fn` can execute code. "
+                    "Set trust_user_code=True only if "
                     "you trust the publisher of this bundle."
                 )
 
